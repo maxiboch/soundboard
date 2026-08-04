@@ -13,12 +13,23 @@ Run:  python render_client.py   (spawns this server over stdio)
 """
 
 import mcp.types as types
-from mcp.server import Server
+from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
 import patchcodec
 
 server = Server("soundboard")
+
+# SDK 2.x note: `ToolAnnotations` and `Annotations` are strict models that
+# silently drop unknown keys at BOTH serialization ends, so an experimental
+# `displayTemplate`/`displayText` can no longer ride on annotations the way
+# it could on the 1.x SDK. Until the SEP lands and the field exists in the
+# spec (and therefore in the models), the only carriers that survive the
+# wire are the opaque `inputSchema` dict (branch-scoped templates below are
+# untouched) and `_meta`, the spec's sanctioned extension point. This file
+# uses `_meta` for the tool-level and result-side strings -- which is itself
+# part of the SEP's motivation: the reference SDK makes annotation-borne
+# experimentation impossible without standardization.
 
 # ---------------------------------------------------------------------------
 # Tool declarations, exactly as they'd appear on the wire.
@@ -37,22 +48,23 @@ TOOLS = [
             },
             "required": ["bus", "gain_db"],
         },
-        annotations=types.ToolAnnotations(
-            title="Set bus gain",
-            readOnlyHint=False,
-            # SEP §1: flat template, tool-level.
-            displayTemplate="set {bus} bus to {gain_db} dB over {ramp_ms} ms",
-        ),
+        annotations=types.ToolAnnotations(title="Set bus gain", readOnlyHint=False),
+        # SEP §1: flat template, tool-level. In `_meta` on SDK 2.x (see note
+        # at top); the SEP proposes `annotations.displayTemplate` as the home.
+        meta={"io.modelcontextprotocol/display-templates": {"template": "set {bus} bus to {gain_db} dB over {ramp_ms} ms"}},
     ),
     types.Tool(
         name="cue_ctl",
         description="Cue transport: play, stop, or duck a bus under dialogue.",
         inputSchema={
+            # SDK 2.x requires a top-level "type" on the wire; branches
+            # under oneOf are unaffected.
+            "type": "object",
             "oneOf": [
                 {
                     "title": "play",
                     # SEP §1: branch-scoped template.
-                    "displayTemplate": "play cue {cue}",
+                    "io.modelcontextprotocol/display-template": "play cue {cue}",
                     "type": "object",
                     "properties": {
                         "cue": {"type": "string"},
@@ -63,7 +75,7 @@ TOOLS = [
                 },
                 {
                     "title": "stop",
-                    "displayTemplate": "stop cue {cue}",
+                    "io.modelcontextprotocol/display-template": "stop cue {cue}",
                     "type": "object",
                     "properties": {"cue": {"type": "string"}, "stop": {"const": True}},
                     "required": ["cue", "stop"],
@@ -71,7 +83,7 @@ TOOLS = [
                 },
                 {
                     "title": "duck",
-                    "displayTemplate": "duck {bus} by {amount_db} dB",
+                    "io.modelcontextprotocol/display-template": "duck {bus} by {amount_db} dB",
                     "type": "object",
                     "properties": {
                         "bus": {"type": "string"},
@@ -95,26 +107,23 @@ TOOLS = [
             "properties": {"patch": {"type": "string"}},
             "required": ["patch"],
         },
-        annotations=types.ToolAnnotations(
-            title="Play SFX patch",
-            # Best a static template can do for an encoded argument: exhibit
-            # it verbatim in a labeled frame. The SEP's Limitations section
-            # is honest about this; the result side is where the server,
-            # the only party that understands its own encoding, closes the
-            # gap via displayText.
-            displayTemplate="play patch {patch}",
-        ),
+        annotations=types.ToolAnnotations(title="Play SFX patch"),
+        # Best a static template can do for an encoded argument: exhibit
+        # it verbatim in a labeled frame. The SEP's Limitations section
+        # is honest about this; the result side is where the server,
+        # the only party that understands its own encoding, closes the
+        # gap via displayText.
+        meta={"io.modelcontextprotocol/display-templates": {"template": "play patch {patch}"}},
     ),
 ]
 
 
-@server.list_tools()
-async def list_tools() -> list[types.Tool]:
-    return TOOLS
+async def list_tools(ctx, params) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=TOOLS)
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+async def call_tool(ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
+    name, arguments = params.name, params.arguments or {}
     if name == "mix_set":
         state = {"bus": arguments["bus"], "gain_db": arguments["gain_db"], "ok": True}
         display = f"{arguments['bus']} bus set to {arguments['gain_db']} dB"
@@ -132,14 +141,22 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     else:
         raise ValueError(f"unknown tool {name}")
 
-    return [
-        types.TextContent(
-            type="text",
-            text=str(state),  # model-facing payload, compact
-            # SEP §2: already-rendered, per-response human summary.
-            annotations=types.Annotations(displayText=display),
-        )
-    ]
+    return types.CallToolResult(
+        content=[
+            types.TextContent(
+                type="text",
+                text=str(state),  # model-facing payload, compact
+                # SEP §2: already-rendered, per-response human summary.
+                # In `_meta` on SDK 2.x (see note at top); the SEP proposes
+                # `annotations.displayText` as the home.
+                meta={"io.modelcontextprotocol/display-templates": {"text": display}},
+            )
+        ]
+    )
+
+
+server.add_request_handler("tools/list", types.PaginatedRequestParams, list_tools)
+server.add_request_handler("tools/call", types.CallToolRequestParams, call_tool)
 
 
 async def main():
