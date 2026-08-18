@@ -55,7 +55,14 @@ jobs:
         uses: JetBrains/qodana-action@4861e015da555e86a72b862892aba6c2b93e6891 # v2026.1.3
         with:
           pr-mode: ${{ github.event_name == 'pull_request' }}
-          upload-result: true
+          # `upload-result: false` on purpose. It uploads a full HTML report to
+          # GitHub artifacts on every run, and Qodana Cloud already stores that
+          # -- per-project, with history. Duplicating it across ~90 repos is
+          # what exhausted the account-wide artifact quota twice in one evening,
+          # which then fails every OTHER workflow's uploads too, including the
+          # lane-package -> lane-sign-publish handoff the release path needs.
+          # The small SARIF is still uploaded below for diagnosing a red gate.
+          upload-result: false
           use-caches: true
           post-pr-comment: ${{ github.event_name == 'pull_request' }}
         env:
