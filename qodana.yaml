@@ -18,7 +18,11 @@ linter: qodana-python
 profile:
   name: qodana.recommended
 
-
+bootstrap: |
+  python -m pip install --quiet --upgrade pip || true
+  [ -f requirements.txt ] && python -m pip install --quiet -r requirements.txt || true
+  [ -f pyproject.toml ] && python -m pip install --quiet . || true
+  [ -f setup.py ] && python -m pip install --quiet -e . || true
 
 exclude:
   - name: All
